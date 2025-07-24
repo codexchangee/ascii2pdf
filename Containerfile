@@ -1,60 +1,52 @@
-FROM python:3.9-slim
+FROM registry.access.redhat.com/ubi8/ubi
 
-LABEL maintainer="codexchangee"
-LABEL description="Converts ASCII and .txt files to PDF without .pdf extension"
+LABEL maintainer="codexchange"
+LABEL description="ASCII to PDF converter container"
 
-# Install required tools
-RUN apt-get update && apt-get install -y file && \
-    pip install fpdf && \
-    rm -rf /var/lib/apt/lists/*
+# Install dependencies
+RUN dnf install -y python3 python3-pip && \
+    pip3 install fpdf && \
+    mkdir -p /data/incoming /data/outgoing
 
-WORKDIR /app
-
-# Create directories for input/output
-RUN mkdir -p /data/incoming /data/outgoing
-
-# Embed the Python logic in the image
-RUN echo "\
+# Add convert.py using echo -e (for proper newlines)
+RUN echo -e '#!/usr/bin/env python3\n\
 import os\n\
-import time\n\
-import subprocess\n\
 from fpdf import FPDF\n\
-\n\
-INPUT_DIR = '/data/incoming'\n\
-OUTPUT_DIR = '/data/outgoing'\n\
-\n\
-def is_convertible_file(filepath):\n\
-    try:\n\
-        output = subprocess.check_output(['file', '--mime', filepath]).decode()\n\
-        return 'text/plain' in output or 'charset=us-ascii' in output\n\
-    except Exception as e:\n\
-        print(f'[!] file check error: {e}')\n\
-        return False\n\
-\n\
-def text_to_pdf(input_path, output_path):\n\
+\ndef convert_txt_to_pdf(txt_path, pdf_path):\n\
     pdf = FPDF()\n\
     pdf.add_page()\n\
-    pdf.set_font('Courier', size=12)\n\
-    with open(input_path, 'r', errors='ignore') as file:\n\
+    pdf.set_font("Arial", size=12)\n\
+    with open(txt_path, "r") as file:\n\
         for line in file:\n\
-            pdf.cell(200, 10, txt=line.strip(), ln=True)\n\
-    pdf.output(output_path)\n\
+            pdf.cell(200, 10, txt=line.strip(), ln=1)\n\
+    pdf.output(pdf_path)\n\
 \n\
-print('[*] Watching for ASCII and .txt files in', INPUT_DIR)\n\
-\n\
-while True:\n\
-    time.sleep(2)\n\
-    for filename in os.listdir(INPUT_DIR):\n\
-        in_path = os.path.join(INPUT_DIR, filename)\n\
-        out_path = os.path.join(OUTPUT_DIR, filename)\n\
-        if os.path.isfile(in_path) and is_convertible_file(in_path):\n\
-            if not os.path.exists(out_path):\n\
-                print(f'[+] Converting: {filename}')\n\
-                try:\n\
-                    text_to_pdf(in_path, out_path)\n\
-                except Exception as e:\n\
-                    print(f'[!] Failed to convert {filename}: {e}')\n\
-" > /app/app.py
+if __name__ == "__main__":\n\
+    import sys\n\
+    if len(sys.argv) != 3:\n\
+        print("Usage: convert.py input.txt output.pdf")\n\
+        exit(1)\n\
+    convert_txt_to_pdf(sys.argv[1], sys.argv[2])\n' > /usr/local/bin/convert.py && \
+    chmod +x /usr/local/bin/convert.py
 
-CMD ["python3", "/app/app.py"]
+# Add entrypoint.sh using echo -e
+RUN echo -e '#!/bin/bash\n\
+IN_DIR="/data/incoming"\n\
+OUT_DIR="/data/outgoing"\n\
+echo "Watching $IN_DIR..."\n\
+while true; do\n\
+  for file in "$IN_DIR"/*.txt; do\n\
+    [ -e "$file" ] || continue\n\
+    base=$(basename "$file" .txt)\n\
+    out="$OUT_DIR/$base"\n\
+    /usr/bin/python3 /usr/local/bin/convert.py "$file" "$out"\n\
+    echo "Converted $file -> $out"\n\
+    rm -f "$file"\n\
+  done\n\
+  sleep 2\n\
+done\n' > /usr/local/bin/entrypoint.sh && \
+    chmod +x /usr/local/bin/entrypoint.sh
 
+VOLUME ["/data/incoming", "/data/outgoing"]
+
+CMD ["/usr/local/bin/entrypoint.sh"]
